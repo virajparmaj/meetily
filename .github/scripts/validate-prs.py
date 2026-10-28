@@ -24,7 +24,7 @@ RESULTS = []
 SPECS = [
     (887, "codex/application-audio", ["audio::source::tests", "audio::clocked_mixer::tests"]),
     (889, "codex/recording-timeouts", ["audio_startup", "stalled_enumeration_cannot_block_recording_shutdown"]),
-    (890, "codex/native-recording-sessions", ["session::", "shutdown_tests"]),
+    (890, "codex/native-recording-sessions", ["session::", "shutdown_tests", "start_preferences_tests"]),
     (888, "codex/summary-editor-loading", None),
 ]
 
