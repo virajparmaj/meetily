@@ -5,12 +5,15 @@ import subprocess
 import sys
 import time
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path.cwd()
 LOGS = Path(os.environ["RUNNER_TEMP"]) / "meetily-validation-logs"
 LOGS.mkdir(parents=True, exist_ok=True)
 ENV = os.environ.copy()
 ENV["CI"] = "true"
 ENV["NEXT_TELEMETRY_DISABLED"] = "1"
+ENV["PYTHONUTF8"] = "1"
 if sys.platform == "win32":
     llvm = Path(r"C:\Program Files\LLVM\bin")
     if llvm.exists():
@@ -54,15 +57,22 @@ for pr, branch, filters in SPECS:
     checks = [
         ("install", ["pnpm", "install", "--frozen-lockfile"]),
         ("types", ["pnpm", "exec", "tsc", "--noEmit", "--incremental", "false"]),
-        ("frontend-tests", ["bun", "test", "tests"]),
-        ("frontend-build", ["pnpm", "build"]),
     ]
     for label, command in checks:
         code = run(pr, label, command, ROOT / "frontend")
         record["checks"][label] = code
-        if code:
+        if code and label == "install":
             break
-    if filters is not None and not any(record["checks"].values()):
+    if record["checks"]["install"] == 0:
+        # Bun module mocks are process-wide. Isolate every upstream suite file
+        # so OS-dependent file enumeration cannot leak mocks between suites.
+        for index, test in enumerate(sorted((ROOT / "frontend/tests").rglob("*.test.*"))):
+            if test.suffix not in (".ts", ".tsx", ".js", ".mjs"):
+                continue
+            label = f"frontend-test-{index}-{test.stem}"
+            record["checks"][label] = run(pr, label, ["bun", "test", str(test)], ROOT / "frontend")
+        record["checks"]["frontend-build"] = run(pr, "frontend-build", ["pnpm", "build"], ROOT / "frontend")
+    if filters is not None and record["checks"].get("frontend-build") == 0:
         code = run(pr, "native-check", ["cargo", "check", "-p", "meetily", "--lib", "--bins", "--locked"])
         record["checks"]["native-check"] = code
         if not code:
