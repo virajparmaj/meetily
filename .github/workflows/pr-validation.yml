@@ -1,0 +1,67 @@
+name: PR validation
+
+on:
+  push:
+    branches: [codex/pr-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Native validation (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]}}'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Preserve validation script outside source checkout
+        shell: bash
+        run: cp .github/scripts/validate-prs.py "$RUNNER_TEMP/validate-meetily-prs.py"
+      - name: Install Linux native prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libclang-dev libssl-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev patchelf libxdo-dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: contribution-validation
+      - name: Validate PR source heads
+        shell: bash
+        run: python "$RUNNER_TEMP/validate-meetily-prs.py"
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ runner.os }}
+          path: ${{ runner.temp }}/meetily-validation-logs/
+          if-no-files-found: warn
+
