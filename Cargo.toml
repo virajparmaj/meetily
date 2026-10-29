@@ -16,3 +16,21 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.32.0", features = ["full"] }
+
+# Compilation profiles to prevent disk bloat while keeping full app functionality
+[profile.dev]
+# Use line tables only (debug=1) instead of full DWARF tables (debug=2).
+# Keeps stack traces and error line numbers intact without generating gigabytes of symbols.
+debug = 1
+split-debuginfo = "unpacked"
+
+# Disable debug symbols for all external dependencies (whisper, ort, tokio, tauri, etc.)
+# This drastically cuts disk usage in target/debug/deps and speeds up linking.
+[profile.dev.package."*"]
+debug = false
+opt-level = 2 # Keeps audio processing and whisper inference performant in dev mode
+
+[profile.release]
+debug = false
+strip = true # Strip all symbols from production binaries
+lto = "thin" # Link-time optimization for smaller binaries
