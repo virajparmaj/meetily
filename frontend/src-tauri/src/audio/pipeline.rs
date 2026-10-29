@@ -1091,7 +1091,7 @@ impl AudioPipelineManager {
                 Ok(result) => result,
                 Err(e) => {
                     error!("Pipeline task failed: {}", e);
-                    Ok(())
+                    Err(anyhow::anyhow!("Audio pipeline task failed: {e}"))
                 }
             }
         } else {

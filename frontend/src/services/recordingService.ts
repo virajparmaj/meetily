@@ -6,6 +6,7 @@
  */
 
 import type { RecordingSourceOptions, RecordingSourceStatus } from '@/lib/recording-source';
+import type { NativeRecordingSession, RecordingCompletion } from '@/types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 
@@ -16,13 +17,17 @@ export interface RecordingState {
   recording_duration: number | null;
   active_duration: number | null;
   source_status?: RecordingSourceStatus;
+  session?: NativeRecordingSession | null;
 }
 
 export interface RecordingStoppedPayload {
   message: string;
   folder_path?: string;
   meeting_name?: string;
+  completion?: RecordingCompletion;
 }
+
+export interface RecordingStartedPayload { sessionId?: string; meetingTitle?: string; }
 
 // Bound the start invoke: > ~40s Bluetooth mic cold-start and ~90s worst-case
 // Windows device enumeration, but still finite so a hung native start settles
@@ -108,9 +113,9 @@ export class RecordingService {
    * @param savePath - Path to save audio file
    * @returns Promise<void>
    */
-  async stopRecording(savePath: string): Promise<void> {
+  async stopRecording(savePath: string, sessionId?: string): Promise<RecordingCompletion | null> {
     return invoke('stop_recording', {
-      args: { save_path: savePath }
+      args: { save_path: savePath, session_id: sessionId }
     });
   }
 
@@ -137,8 +142,8 @@ export class RecordingService {
    * @param callback - Function to call when recording starts
    * @returns Promise that resolves to unlisten function
    */
-  async onRecordingStarted(callback: () => void): Promise<UnlistenFn> {
-    return listen('recording-started', callback);
+  async onRecordingStarted(callback: (payload: RecordingStartedPayload) => void): Promise<UnlistenFn> {
+    return listen<RecordingStartedPayload>('recording-started', event => callback(event.payload));
   }
 
   /**

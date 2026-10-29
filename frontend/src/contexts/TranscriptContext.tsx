@@ -7,6 +7,7 @@ import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
+import { defaultRecordingName } from '@/lib/recording-name';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
@@ -19,7 +20,7 @@ interface TranscriptContextType {
   setMeetingTitle: (title: string) => void;
   clearTranscripts: () => void;
   currentMeetingId: string | null;
-  markMeetingAsSaved: () => Promise<void>;
+  markMeetingAsSaved: (sessionId?: string) => Promise<void>;
 }
 
 const TranscriptContext = createContext<TranscriptContextType | undefined>(undefined);
@@ -37,6 +38,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const isUserAtBottomRef = useRef<boolean>(true);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
+  const nativeSessionRef = useRef(recordingState.session);
+  nativeSessionRef.current = recordingState.session;
 
   // Keep ref updated with current transcripts
   useEffect(() => {
@@ -92,10 +95,10 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         await indexedDBService.init();
 
         // Listen for recording-started event
-        unlistenRecordingStarted = await recordingService.onRecordingStarted(async () => {
+        unlistenRecordingStarted = await recordingService.onRecordingStarted(async (payload) => {
           try {
             // Generate unique meeting ID
-            const meetingId = `meeting-${Date.now()}`;
+            const meetingId = `meeting-${payload?.sessionId || Date.now()}`;
             setCurrentMeetingId(meetingId);
 
             // Store in sessionStorage as fallback for markMeetingAsSaved
@@ -103,10 +106,13 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             console.log('[Recording Started] 💾 IndexedDB meeting ID stored:', meetingId);
 
             // Get meeting name
-            const meetingName = await recordingService.getRecordingMeetingName();
+            const meetingName = payload?.meetingTitle || await recordingService.getRecordingMeetingName();
 
             // Use a better fallback that matches the backend's naming pattern
-            const effectiveTitle = meetingName || `Meeting ${new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-')}`;
+            const effectiveTitle = meetingName || defaultRecordingName();
+            setMeetingTitle(effectiveTitle);
+            setTranscripts([]);
+            transcriptsRef.current = [];
 
             // Initialize meeting metadata in IndexedDB
             await indexedDBService.saveMeetingMetadata({
@@ -286,6 +292,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       try {
         console.log('🔥 Setting up MAIN transcript listener during component initialization...');
         unlistenFn = await transcriptService.onTranscriptUpdate((update) => {
+          const owner = nativeSessionRef.current;
+          if (update.session_id && owner && (update.session_id !== owner.sessionId
+            || ['completed', 'error'].includes(owner.phase))) return;
           const now = Date.now();
           console.log('🎯 MAIN LISTENER: Received transcript update:', {
             sequence_id: update.sequence_id,
@@ -487,9 +496,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Mark current meeting as saved in IndexedDB
-  const markMeetingAsSaved = useCallback(async () => {
+  const markMeetingAsSaved = useCallback(async (sessionId?: string) => {
     // Try context state first, fallback to sessionStorage
-    const meetingId = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
+    const meetingId = sessionId ? `meeting-${sessionId}` : currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
 
     if (!meetingId) {
       console.error('[IndexedDB] ❌ Cannot mark meeting as saved: No meeting ID available!');
@@ -502,8 +511,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       await indexedDBService.markMeetingSaved(meetingId);
 
       // Clear both sources
-      setCurrentMeetingId(null);
-      sessionStorage.removeItem('indexeddb_current_meeting_id');
+      setCurrentMeetingId(current => current === meetingId ? null : current);
+      if (sessionStorage.getItem('indexeddb_current_meeting_id') === meetingId) sessionStorage.removeItem('indexeddb_current_meeting_id');
     } catch (error) {
       console.error('[IndexedDB] ❌ Failed to mark meeting as saved:', error);
     }

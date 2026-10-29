@@ -50,21 +50,30 @@ pub struct DeviceInfo {
 pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
     meeting_folder: Option<PathBuf>,
+    base_folder: Option<PathBuf>,
     meeting_name: Option<String>,
     metadata: Option<MeetingMetadata>,
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
     is_saving: Arc<Mutex<bool>>,
+    accumulation_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
 }
 
 impl RecordingSaver {
+    pub fn set_base_folder(&mut self, folder: PathBuf) { self.base_folder = Some(folder); }
+    pub fn transcript_collector(&self) -> Arc<Mutex<Vec<TranscriptSegment>>> {
+        self.transcript_segments.clone()
+    }
+
     pub fn new() -> Self {
         Self {
             incremental_saver: None,
             meeting_folder: None,
+            base_folder: None,
             meeting_name: None,
             metadata: None,
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
             is_saving: Arc::new(Mutex::new(false)),
+            accumulation_task: None,
         }
     }
 
@@ -170,13 +179,16 @@ impl RecordingSaver {
             }
         }
 
+        // Set the flag before spawning; an early chunk must not be discarded.
+        if let Ok(mut is_saving) = self.is_saving.lock() { *is_saving = true; }
         // Start accumulation task
         let is_saving_clone = self.is_saving.clone();
         let incremental_saver_arc = self.incremental_saver.clone();
         let save_audio = auto_save;
 
-        tokio::spawn(async move {
+        self.accumulation_task = Some(tokio::spawn(async move {
             info!("Recording saver accumulation task started (save_audio: {})", save_audio);
+            let mut failure = None;
 
             while let Some(chunk) = receiver.recv().await {
                 // Check if we should continue
@@ -197,9 +209,11 @@ impl RecordingSaver {
                         let mut saver_guard = saver_arc.lock().await;
                         if let Err(e) = saver_guard.add_chunk(chunk) {
                             error!("Failed to add chunk to incremental saver: {}", e);
+                            failure = Some(format!("Audio checkpoint failed: {e}"));
                         }
                     } else {
                         error!("Incremental saver not available while accumulating");
+                        failure = Some("Incremental audio saver was unavailable.".into());
                     }
                 } else {
                     // auto_save is false: discard audio chunk (no-op)
@@ -208,12 +222,8 @@ impl RecordingSaver {
             }
 
             info!("Recording saver accumulation task ended");
-        });
-
-        // Set saving flag
-        if let Ok(mut is_saving) = self.is_saving.lock() {
-            *is_saving = true;
-        }
+            match failure { Some(error) => Err(error), None => Ok(()) }
+        }));
     }
 
     /// Initialize meeting folder structure and metadata
@@ -223,7 +233,7 @@ impl RecordingSaver {
     /// * `create_checkpoints` - Whether to create .checkpoints/ directory and IncrementalAudioSaver
     fn initialize_meeting_folder(&mut self, meeting_name: &str, create_checkpoints: bool) -> Result<()> {
         // Load preferences to get base recordings folder
-        let base_folder = super::recording_preferences::get_default_recordings_folder();
+        let base_folder = self.base_folder.clone().unwrap_or_else(super::recording_preferences::get_default_recordings_folder);
 
         // Create meeting folder structure (with or without .checkpoints/ subdirectory)
         let meeting_folder = create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?;
@@ -356,18 +366,38 @@ impl RecordingSaver {
     ) -> Result<Option<String>, String> {
         info!("Stopping recording saver");
 
-        // Stop accumulation
+        // The stopped pipeline has dropped its sender. Drain every queued audio
+        // chunk before merging checkpoints instead of relying on a sleep.
+        let drain_error = if let Some(mut task) = self.accumulation_task.take() {
+            match tokio::time::timeout(std::time::Duration::from_secs(60), &mut task).await {
+                Ok(Ok(Ok(()))) => None,
+                Ok(Ok(Err(error))) => Some(error),
+                Ok(Err(error)) => Some(format!("Audio checkpoint worker failed: {error}")),
+                Err(_) => {
+                    task.abort(); let _ = task.await;
+                    Some("Audio checkpoint drain timed out; available checkpoints remain for recovery.".into())
+                }
+            }
+        } else { None };
+        // Stop accumulation after draining.
         if let Ok(mut is_saving) = self.is_saving.lock() {
             *is_saving = false;
         }
 
-        // Give time for final chunks
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
         // Check if incremental saver exists (indicates auto_save was enabled)
         let should_save_audio = self.incremental_saver.is_some();
+        if let Some(error) = drain_error { return Err(error); }
 
         if !should_save_audio {
+            if let Some(folder) = &self.meeting_folder {
+                self.write_transcripts_json(folder).map_err(|e|e.to_string())?;
+                if let Some(mut metadata) = self.metadata.clone() {
+                    metadata.status = "completed".into();
+                    metadata.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    metadata.duration_seconds = recording_duration;
+                    self.write_metadata(folder,&metadata).map_err(|e|e.to_string())?;
+                }
+            }
             info!("⚠️  No audio saver initialized (auto-save was disabled) - skipping audio finalization");
             info!("✅ Transcripts and metadata already saved incrementally");
             return Ok(None);
@@ -444,10 +474,7 @@ impl RecordingSaver {
             warn!("Failed to emit recording-saved event: {}", e);
         }
 
-        // Clean up transcript segments
-        if let Ok(mut segments) = self.transcript_segments.lock() {
-            segments.clear();
-        }
+        // The session-owned collector survives until native database finalization.
 
         Ok(Some(final_audio_path.to_string_lossy().to_string()))
     }

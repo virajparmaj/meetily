@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{Local, Utc};
 use log::{debug, info, warn};
 use realfft::num_complex::{Complex32, ComplexFloat};
 use realfft::RealFftPlanner;
@@ -25,7 +25,7 @@ pub fn sanitize_filename(name: &str) -> String {
 }
 
 /// Create a meeting folder with timestamp and return the path
-/// Creates structure: base_path/MeetingName_YYYY-MM-DD_HH-MM/
+/// Creates structure: base_path/YYYY-MM-DD_HH-MM-SS_UTCoffset_MeetingName_UUID/
 ///                    ├── .checkpoints/  (for incremental saves, optional)
 ///
 /// # Arguments
@@ -37,9 +37,11 @@ pub fn create_meeting_folder(
     meeting_name: &str,
     create_checkpoints_dir: bool,
 ) -> Result<PathBuf> {
-    let timestamp = Utc::now().format("%Y-%m-%d_%H-%M").to_string();
+    // Local date first sorts recordings chronologically. The offset distinguishes
+    // repeated local times during daylight-saving changes; UUIDs avoid collisions.
+    let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S_%z").to_string();
     let sanitized_name = sanitize_filename(meeting_name);
-    let folder_name = format!("{}_{}", sanitized_name, timestamp);
+    let folder_name = format!("{}_{}_{}", timestamp, sanitized_name, uuid::Uuid::new_v4());
     let meeting_folder = base_path.join(folder_name);
 
     // Create main meeting folder
@@ -55,6 +57,10 @@ pub fn create_meeting_folder(
     }
 
     Ok(meeting_folder)
+}
+
+pub fn default_recording_name() -> String {
+    format!("Meeting {}", Local::now().format("%Y-%m-%d %H:%M:%S"))
 }
 
 pub fn normalize_v2(audio: &[f32]) -> Vec<f32> {

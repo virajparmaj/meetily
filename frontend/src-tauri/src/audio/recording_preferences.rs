@@ -125,14 +125,8 @@ pub async fn load_recording_preferences<R: Runtime>(
     // Try to get the preferences from store
     let prefs = if let Some(value) = store.get("preferences") {
         match serde_json::from_value::<RecordingPreferences>(value.clone()) {
-            Ok(mut p) => {
+            Ok(p) => {
                 info!("Loaded recording preferences from store");
-                // Update macOS backend to current value if needed
-                #[cfg(target_os = "macos")]
-                {
-                    let backend = crate::audio::capture::get_current_backend();
-                    p.system_audio_backend = Some(backend.to_string());
-                }
                 p
             }
             Err(e) => {
@@ -290,22 +284,28 @@ pub async fn get_available_audio_backends() -> Result<Vec<String>, String> {
 
 /// Get current audio capture backend
 #[tauri::command]
-pub async fn get_current_audio_backend() -> Result<String, String> {
+pub async fn get_current_audio_backend<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
-        let backend = crate::audio::capture::get_current_backend();
+        let preferences = load_recording_preferences(&app).await.map_err(|e|e.to_string())?;
+        let backend = match preferences.system_audio_backend {
+            Some(value) => AudioCaptureBackend::from_string(&value).ok_or("Saved audio backend is invalid. Re-select it in recording settings.")?,
+            None => crate::audio::capture::get_current_backend(),
+        };
+        crate::audio::capture::set_current_backend(backend);
         Ok(backend.to_string())
     }
 
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = app;
         Ok("screencapturekit".to_string())
     }
 }
 
 /// Set audio capture backend
 #[tauri::command]
-pub async fn set_audio_backend(backend: String) -> Result<(), String> {
+pub async fn set_audio_backend<R: Runtime>(app: AppHandle<R>, backend: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         use crate::audio::capture::AudioCaptureBackend;
@@ -344,12 +344,15 @@ pub async fn set_audio_backend(backend: String) -> Result<(), String> {
         }
 
         info!("Setting audio backend to: {:?}", backend_enum);
-        crate::audio::capture::set_current_backend(backend_enum);
+        let mut preferences = load_recording_preferences(&app).await.map_err(|e|e.to_string())?;
+        preferences.system_audio_backend = Some(backend_enum.to_string());
+        save_recording_preferences(&app,&preferences).await.map_err(|e|e.to_string())?;
         Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = app;
         if backend != "screencapturekit" {
             return Err(format!(
                 "Backend {} not available on this platform",

@@ -19,13 +19,12 @@ impl Drop for AbortOnDrop {
     }
 }
 
-fn open(resolved: &ResolvedApplication) -> Result<Option<CoreAudioStream>> {
+async fn open(resolved: &ResolvedApplication) -> Result<Option<CoreAudioStream>> {
     if !resolved.running || resolved.processes.is_empty() {
         return Ok(None);
     }
     let ids: Vec<_> = resolved.processes.iter().map(|(id, _)| *id).collect();
-    CoreAudioCapture::for_processes(Some(&ids))?
-        .stream()
+    CoreAudioCapture::start_bounded(Some(ids)).await
         .map(Some)
 }
 
@@ -58,7 +57,7 @@ pub async fn start(
         application.name
     );
     // Open before returning success: a denied/failed tap cannot silently become mic-only.
-    let mut stream = open(&initial).map_err(|e| {
+    let mut stream = open(&initial).await.map_err(|e| {
         anyhow!(
             "Cannot capture {}: {e}. Check system audio recording permission in System Settings.",
             application.name
@@ -107,7 +106,7 @@ pub async fn start(
                                 capture = None;
                                 samples.clear();
                                 current = next;
-                                match open(&current) {
+                                match open(&current).await {
                                     Ok(Some(next_stream)) => {
                                         capture = Some(processor(&next_stream, &device, &state));
                                         stream = Some(next_stream);
@@ -161,8 +160,8 @@ pub async fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn absent_audio_waits_without_creating_any_tap() {
+    #[tokio::test]
+    async fn absent_audio_waits_without_creating_any_tap() {
         for running in [false, true] {
             assert!(open(&ResolvedApplication {
                 running,
@@ -170,6 +169,7 @@ mod tests {
                 output_device: 0,
                 output_sample_rate: 48000
             })
+            .await
             .unwrap()
             .is_none());
         }

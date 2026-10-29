@@ -13,6 +13,7 @@ import {
   type ModelWithStatus,
 } from '@/lib/transcription-model-readiness';
 import { toast } from 'sonner';
+import { defaultRecordingName } from '@/lib/recording-name';
 
 const TRANSCRIPTION_RUNTIME_START_ERROR_CODE = 'TRANSCRIPTION_RUNTIME_INITIALIZATION_FAILED';
 const TRANSCRIPTION_RUNTIME_USER_MESSAGE = 'Speech recognition could not initialize. Restart Meetily. If the problem continues, repair or reinstall the app.';
@@ -34,7 +35,7 @@ interface TranscriptConfig {
  * Handles both manual start (button click) and auto-start (from sidebar navigation).
  *
  * Features:
- * - Meeting title generation (format: Meeting DD_MM_YY_HH_MM_SS)
+ * - Meeting title generation with local date and time (Meeting YYYY-MM-DD HH:MM:SS)
  * - Transcript clearing on start
  * - Analytics tracking
  * - Recording notification display
@@ -57,16 +58,7 @@ export function useRecordingStart(
   const { setStatus } = useRecordingState();
 
   // Generate meeting title with timestamp
-  const generateMeetingTitle = useCallback(() => {
-    const now = new Date();
-    const day = String(now.getDate()).padStart(2, '0');
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const year = String(now.getFullYear()).slice(-2);
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    const seconds = String(now.getSeconds()).padStart(2, '0');
-    return `Meeting ${day}_${month}_${year}_${hours}_${minutes}_${seconds}`;
-  }, []);
+  const generateMeetingTitle = useCallback(() => defaultRecordingName(), []);
 
   const getTranscriptionProvider = useCallback(async (): Promise<string> => {
     try {
